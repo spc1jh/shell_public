@@ -8,3 +8,8 @@ curl -fsSL https://raw.githubusercontent.com/spc1jh/shell_public/main/aws-cloud9
 df -h
 ```
 
+용량을 변경하기 위해서는 다음과 같이 하면 됩니다. 
+```
+curl -fsSL https://raw.githubusercontent.com/spc1jh/shell_public/main/aws-cloud9/resize.sh | bash -s 100
+df -h
+```
