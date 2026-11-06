@@ -2,7 +2,9 @@
 
 > 비유나 일반론이 아니라 **`src/team5`에 실제로 있는 클래스·메서드·실행 로그**만으로 설명한다.
 > 각 패턴마다 같은 순서로 정리한다.
-> ① 무엇이 바뀌는가 / 무엇을 보호하는가 → ② 코드 속 역할 → ③ 호출이 실제로 흐르는 순서 → ④ 변경 시나리오에서 추가된 코드 vs 건드리지 않은 코드 → ⑤ 코드를 읽다 헷갈리기 쉬운 지점
+> ① 무엇이 바뀌는가 / 무엇을 보호하는가 → ② 코드 속 역할 → ③ 호출이 실제로 흐르는 순서 → ④ 변경 시나리오에서 추가된 코드 vs 건드리지 않은 코드 → ⑤ 코드를 읽다 헷갈리기 쉬운 지점 → ⑥ 이 패턴을 쓰지 않았다면 (가정 코드와 비교)
+>
+> ⑥의 "쓰지 않은 코드"는 실제로 만든 것이 아니라 **비교를 위한 가정 코드**다. 클래스 이름과 시나리오는 우리 것을 그대로 썼다.
 
 실행 로그는 `java -Dstdout.encoding=UTF-8 -cp <out> team5.Main <시나리오번호>` 결과를 그대로 옮겼다. (콘솔이 CP949이면 옵션 없이 실행)
 
@@ -100,6 +102,37 @@ pay() → 거절(영상조사 대기)          ← VideoWaitState는 pay를 over
 2. **`getClass() ==` 비교** ([ClaimWorkflow.java](src/team5/ClaimWorkflow.java)의 `next`, `insertAfter`): 상태 객체를 `new`로 만들어 쓰므로 객체 동일성이 아니라 "클래스 종류"로 위치를 찾는다.
 3. **`undo`에서 `restore()`를 쓰는 이유**: `moveTo`를 쓰면 "상태 전이" 로그가 또 찍힌다. 되돌리기는 출력 없이 필드만 바꾼다.
 
+### ⑥ 이 패턴을 쓰지 않았다면 (가정 코드와 비교)
+
+`Claim`이 상태를 `enum`으로 들고 있고, 업무 요청마다 `switch`로 분기한다고 가정해 보자.
+
+```java
+// 가정: State 패턴 없이 작성한 Claim
+public boolean pay() {
+    switch (status) {
+        case RECEIVED:      System.out.println("pay() → 거절(조사 전)");      return false;
+        case ASSIGNED:      System.out.println("pay() → 거절(조사 전)");      return false;
+        case INVESTIGATING: System.out.println("pay() → 거절(조사 중)");      return false;
+        case PENDING_CALC:  System.out.println("pay() → 거절(사기 점검 전)"); return false;
+        case FRAUD_HOLD:    System.out.println("pay() → 거절(보류 중)");      return false;
+        case APPROVED:      status = CLOSED; return true;
+        ...
+    }
+}
+// assign(), reassign(), registerResult(), proceed(), inspectFraud() 도 같은 모양의 switch
+```
+
+| 비교 항목 | 쓰지 않았을 때 | 우리 코드 |
+|---|---|---|
+| 분기 개수 | 업무 요청 6개 × 상태 7개 = 최대 42개 분기가 `Claim` 한 클래스에 모인다 | 상태 클래스 7개에 나뉘고, 각 클래스는 **자기 단계에서 허용되는 것만** 쓴다 |
+| 영상조사대기 추가 | `switch`가 있는 **6개 메서드를 전부** 열어 `case VIDEO_WAIT`를 넣는다. `proceed()`의 `INVESTIGATING → PENDING_CALC`도 `VIDEO_WAIT`로 고친다 | 파일 1개 추가 + `insertAfter` 한 줄 |
+| 한 곳을 빠뜨리면 | `pay()`에 `case VIDEO_WAIT`를 안 넣으면 `default`로 빠져 **영상조사 전인데 지급이 될 수 있다.** 컴파일러는 알려 주지 않는다 | 기본 구현이 **거절**이라, 빠뜨려도 막히는 쪽으로 실패한다 (시나리오 5의 `pay() → 거절(영상조사 대기)`) |
+| "다음 상태" 지식 | 모든 `case`에 다음 상태가 박혀 있어 순서를 바꾸려면 여러 곳을 찾아 고친다 | `ClaimWorkflow`의 `order` 목록 한 곳 |
+| 거절 문구 | 분기마다 문구를 직접 씀 (오타·불일치) | `denyReason()` 한 줄 + `deny()` 공통 처리 |
+| 검증 | 한 클래스가 모든 상태를 알아서 테스트 조합이 커진다 | 상태 클래스별로 "이 상태에서 허용되는 작업"만 확인 |
+
+핵심은 **분기가 늘어서 보기 싫다**가 아니라, **변경 때 고쳐야 할 곳이 흩어져 있어 하나라도 놓치면 업무 규칙이 뚫린다**는 점이다.
+
 ---
 
 ## 2. Strategy — "누구를 배정할까"만 갈아 끼운다
@@ -167,6 +200,29 @@ AI 판독이 `SEVERE`이므로 가까운 K 대신 전문가 M이 선택된다.
 2. `Optional<Adjuster>`를 돌려주는 이유: 후보가 비면 `AssignCommand`가 "배정 가능한 손해사정사 없음"을 출력하고 `false`를 돌려준다.
 3. `ReassignCommand`는 같은 전략을 쓰되 **후보에서 현재 담당자를 뺀** 목록(`others`)을 넘긴다. 전략은 그 사실을 모른다.
 
+### ⑥ 이 패턴을 쓰지 않았다면 (가정 코드와 비교)
+
+배정 정책을 `enum`이나 문자열로 받아 `AssignCommand`와 `ReassignCommand` 안에서 직접 분기한다고 가정해 보자.
+
+```java
+// 가정: Strategy 없이 작성한 AssignCommand.execute()
+Adjuster chosen;
+switch (policy) {
+    case DISTANCE:  chosen = min(candidates, 거리);      break;
+    case SPECIALTY: chosen = 전문분야 일치 우선 후 거리;    break;
+    case WORKLOAD:  chosen = min(candidates, 진행건수);   break;
+}
+// ReassignCommand.execute() 에도 같은 switch 를 한 번 더 둔다 (현재 담당자만 제외)
+```
+
+| 비교 항목 | 쓰지 않았을 때 | 우리 코드 |
+|---|---|---|
+| 중복 | 같은 `switch`가 배정·재배정 **두 Command에 복사**된다 | 두 Command가 같은 `AssignmentStrategy`를 부른다 |
+| AI 판독 기반 추가 | `case AI_BASED`를 **두 곳 모두** 추가해야 한다. 재배정 쪽만 빠뜨리면 최초 배정은 AI, 재배정은 거리로 가서 **정책이 어긋난다** | 파일 1개 (`AiBasedStrategy`), 호출부에서 `new` 한 줄 |
+| 로그 `[배정 로직]` | 정책마다 비교 값 출력 코드를 `switch` 안에 또 넣는다 | 각 전략이 `rule()`·`evaluate()`로 자기 기준을 설명한다 |
+| Command의 책임 | "이력·취소" 코드와 "누구를 고를지" 계산이 한 메서드에 섞여, 정책을 고치다 이력 코드를 건드릴 위험이 있다 | `AssignCommand`는 `select()` 호출 결과만 쓴다 |
+| 정책 비교 시연 | 시나리오 8처럼 같은 사고에 다른 정책을 적용해 보려면 분기값을 바꿔 다시 실행해야 한다 | `new DistanceFirstStrategy()`와 `new AiBasedStrategy()`를 같은 입력에 넘기면 끝 |
+
 ---
 
 ## 3. Command — "현장 지시"를 객체로 만들어 보관·기록·취소한다
@@ -233,6 +289,39 @@ Command는 변경 시나리오 3개와 직접 맞물리지는 않는다. 다만 
 2. **`undo()`가 각 Command에 있는 이유**: 되돌리는 방법은 지시마다 다르다. 배정은 이전 상태·담당자 복원(`claim.restore`), 결과등록은 마지막 결과 제거(`removeLastResult`).
 3. 단말 큐와 서버 스택은 **다른 것**이다. 큐(`pending`)는 아직 실행 전인 지시, 스택(`executed`)은 이미 실행된 지시다.
 
+### ⑥ 이 패턴을 쓰지 않았다면 (가정 코드와 비교)
+
+단말이 `Claim`의 메서드를 직접 부른다고 가정해 보자.
+
+```java
+// 가정: Command 없이 작성한 단말
+void onSave(String text) {
+    claim.registerResult(text);   // 통신이 끊겼다면? 예외이거나 호출이 사라진다
+}
+```
+
+통신 단절을 처리하려면 단말이 "문구"와 "지시 종류"를 따로 저장하고, 복구 후 종류별로 다시 해석해야 한다.
+
+```java
+// 가정: 보관은 하되 객체가 아니라 데이터로 보관
+record Saved(String type, Object... args) {}
+void onReconnect() {
+    for (Saved s : saved) {
+        if (s.type().equals("RESULT"))        claim.registerResult((String) s.args()[0]);
+        else if (s.type().equals("REASSIGN")) ...   // 지시 종류가 늘 때마다 분기 추가
+        else if (s.type().equals("ASSIGN"))   ...
+    }
+}
+```
+
+| 비교 항목 | 쓰지 않았을 때 | 우리 코드 |
+|---|---|---|
+| 시나리오 3 (터널) | 호출이 유실되거나, 보관 로직을 지시 종류마다 따로 짜야 한다 | 어떤 지시든 `FieldCommand`이므로 `pending.add(command)` 한 줄로 보관, 복구 시 `server.run(pending.poll())` |
+| 순서 보장 | 종류별로 따로 보관하면 결과등록과 재배정의 **상대 순서**가 깨질 수 있다 | 큐 하나(FIFO)에 지시를 그대로 넣어 제출 순서가 유지된다 |
+| 서버 이력 | 호출하는 곳마다 `log.add(...)`를 직접 써야 해서 빠뜨리면 이력이 비고, 거절된 호출까지 남을 수 있다 | `CommandInvoker.run()` 한 곳에서 **성공한 것만** 기록 |
+| 취소(undo) | 무엇을 되돌릴지 호출자가 따로 기억해야 한다 (이전 상태, 이전 담당자…) | 각 Command가 자기 `undo()`를 갖고, 서버는 `executed.pop().undo()`만 부른다 |
+| 새 지시 추가 | 보관·전송·이력·취소 코드를 모두 찾아 `else if`를 추가한다 | `FieldCommand` 구현체 1개. 단말과 서버는 그대로 |
+
 ---
 
 ## 4. Visitor — "점검 항목"을 늘려도 사고 구성 요소를 건드리지 않는다
@@ -296,6 +385,36 @@ pay() → 거절(보류 중)
 3. **한계**: 새 **요소 종류**가 생기면 `ClaimVisitor`와 모든 규칙을 고쳐야 한다. 우리는 요소 4종이 고정이라는 가정으로 Visitor를 골랐다.
 4. **전이는 Visitor의 일이 아니다.** `FraudInspector`는 점수만 계산하고, 보류로 보낼지는 `PendingCalcState`가 정한다. 그래서 점검 규칙을 바꿔도 상태 전이 규칙이 안 흔들린다.
 
+### ⑥ 이 패턴을 쓰지 않았다면 (가정 코드와 비교)
+
+두 가지 방식을 생각할 수 있다.
+
+**방식 A. 점검기가 요소 타입을 직접 검사한다**
+```java
+// 가정: Visitor 없이 작성한 FraudInspector.inspect()
+for (ClaimElement e : claim.elements()) {
+    if (e instanceof Party p && p.recentClaims() >= 3)                                  total += 40;
+    if (e instanceof PartnerEstimate pe && pe.amount() > pe.referenceAmount() * 1.5)    total += 35;
+    if (e instanceof PartnerEstimate pe && pe.repeatDeals() >= 5)                       total += 30; // 새 규칙마다 한 줄
+}
+// 같은 요소(PartnerEstimate)에 규칙이 둘 이상 걸리므로 else-if 로 묶을 수도 없다
+```
+**방식 B. 요소가 스스로 점수를 계산한다**
+```java
+// 가정: 각 요소에 score() 를 둠
+record Party(...) { int score() { return recentClaims >= 3 ? 40 : 0; } }
+```
+
+| 비교 항목 | 쓰지 않았을 때 | 우리 코드 |
+|---|---|---|
+| 제휴 정비공장 규칙 추가 | A: `inspect()`를 연다. 규칙이 늘수록 이 메서드가 계속 커진다 / B: `PartnerEstimate` 클래스를 연다 | 파일 1개 + `add()` 한 줄 |
+| 책임 | A: 점수 합산·판정과 규칙 조건이 한 메서드에 섞인다 / B: **데이터 클래스가 사기 규칙을 알게 된다** | 요소는 `accept`만, 규칙은 `FraudRule`, 합산은 `FraudInspector` |
+| 항목별 점수 출력 | 규칙별 이름·만점·근거를 따로 모아야 해서 시나리오 4의 `단기 반복 청구: 40점 / 40점 (최근 6개월 청구 4회)` 같은 출력을 만들기 번거롭다 | `title()`, `maxPoints()`, `flag(detail)`로 규칙이 스스로 제공 |
+| 걸리지 않은 항목(0점) 표시 | 규칙 목록이 코드 곳곳에 흩어져 있어 "점검한 항목 전체"를 뽑기 어렵다 | `rules` 목록을 돌며 0점 항목도 `RuleResult`로 포함 |
+| 한 규칙이 여러 요소를 보는 경우 | `if` 체인이 규칙 단위가 아니라 요소 단위로 쪼개져 규칙 하나가 여러 곳에 흩어진다 | 규칙 클래스 하나가 필요한 `visit`만 override |
+
+**Visitor가 불리한 경우도 있다.** 새 **요소 종류**가 생기면 `ClaimVisitor`와 모든 규칙을 고쳐야 한다. 우리는 요소 4종이 고정이고 **규칙이 계속 늘어난다**는 가정(사기 규칙 증가)이므로 Visitor를 골랐다. 반대로 요소가 자주 늘고 규칙이 고정이라면 방식 B가 더 낫다.
+
 ---
 
 ## 5. 네 패턴의 접점 — 한 호출에서 책임이 넘어가는 지점
@@ -325,10 +444,12 @@ FieldTerminal.submit        (Command: 지시를 서버로 전달하거나 보관
 
 ## 6. 변경 시나리오 3개 — 추가한 코드와 건드리지 않은 코드
 
-| 변경 | 추가한 것 | 연결한 지점 | 건드리지 않은 것 |
-|---|---|---|---|
-| 영상조사대기 | `ext/VideoWaitState` | `ClaimWorkflow.insertAfter(...)` | `InvestigatingState`, `PendingCalcState`, `Claim` |
-| AI 1차 판독 배정 | `ext/AiBasedStrategy` | 호출부의 `new AiBasedStrategy()` | `AssignCommand`, `ReassignCommand`, `Claim`의 위임 코드 |
-| 제휴 정비공장 반복 거래 | `ext/PartnerRepeatRule` | `FraudInspector.add(...)` | `FraudInspector.inspect`, 4개 Element, `PendingCalcState` |
+| 변경 | 추가한 것 | 연결한 지점 | 건드리지 않은 것 | 패턴 없이 짰다면 고쳐야 할 곳 |
+|---|---|---|---|---|
+| 영상조사대기 | `ext/VideoWaitState` | `ClaimWorkflow.insertAfter(...)` | `InvestigatingState`, `PendingCalcState`, `Claim` | `Claim`의 `switch` 6개 메서드 전부, `proceed()`의 다음 상태 |
+| AI 1차 판독 배정 | `ext/AiBasedStrategy` | 호출부의 `new AiBasedStrategy()` | `AssignCommand`, `ReassignCommand`, `Claim`의 위임 코드 | 배정 Command와 재배정 Command의 `switch` 두 곳 |
+| 제휴 정비공장 반복 거래 | `ext/PartnerRepeatRule` | `FraudInspector.add(...)` | `FraudInspector.inspect`, 4개 Element, `PendingCalcState` | `FraudInspector.inspect()`의 `instanceof` 체인 (또는 `PartnerEstimate` 클래스) |
+
+패턴 없이도 **동작은 한다.** 차이는 변경이 들어올 때 드러난다. 고칠 곳이 여러 군데로 흩어지고, 하나를 빠뜨려도 컴파일은 통과하므로 업무 규칙(영상조사 전 지급 금지, 재배정 정책 일치 등)이 조용히 깨질 수 있다.
 
 참고: `Claim`에는 `aiDamageGrade` 필드와 `setAiDamageGrade()`가, `Adjuster`에는 `specialties()`가 변경 시나리오 및 사건 개요 출력 때문에 **나중에 추가**됐다. "변경 시나리오를 붙이려고 기존 클래스를 고쳤다"는 아니지만, 코어에 전혀 손대지 않았다고 말하면 부정확하므로 발표에서는 "패턴 구조(State 위임, Strategy 호출, Visitor 순회)는 수정하지 않았다"로 표현한다.
