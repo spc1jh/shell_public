@@ -1,378 +1,332 @@
-# 5조 – 패턴 쉬운 설명과 상세 흐름
+# 5조 – 코드로 보는 패턴
 
-각 패턴을 **① 일상 비유 → ② 우리 문제 → ③ 패턴이 없으면? → ④ 누가 무슨 일을 하나 → ⑤ 실제 흐름(단계별) → ⑥ 한 줄 정리** 순서로 설명한다.
-흐름은 실제 실행 출력(`Main` 시나리오)과 코드 호출 순서를 그대로 따라간 것이다. 직접 확인하려면 각 절 끝의 실행 명령을 쓴다.
+실제 소스(`src/team5`, `src/team5/ext`)에서 패턴별 핵심 코드만 골랐다. 설명용으로 주석은 줄였고, 로직은 그대로다.
 
-## 0. 먼저 알아둘 말
+## 0. 한눈에 보기
 
-| 말 | 쉬운 뜻 |
-|---|---|
-| 인터페이스 | "이런 일은 할 수 있어야 한다"는 약속만 적어 둔 틀. 실제 일은 구현하는 클래스가 한다 |
-| 위임 | 내가 직접 안 하고 담당자에게 넘기는 것 |
-| 기본 구현(default) | 인터페이스가 미리 정해 둔 기본 행동. 이 프로젝트에서는 "거절" |
-| 객체로 만든다 | "배정해줘" 같은 행동을 손에 쥘 수 있는 물건(클래스)으로 만드는 것. 물건이 되면 보관, 취소, 기록이 가능해진다 |
-| 더블 디스패치 | 두 번 넘겨서 정확한 쪽을 찾는 것. 요소가 "나를 점검해줘"라고 방문자를 부르고, 방문자는 "아, 당신은 당사자군요"하며 맞는 검사를 한다 |
-
-네 패턴의 역할을 한 줄로 비교하면 이렇다.
-
-| 패턴 | 한 줄 정의 | 우리 시스템에서 바뀌는 것 |
-|---|---|---|
-| State | 내부 상태가 바뀌면 내 행동도 바뀐다 | 상태와 상태별 허용 작업 |
-| Strategy | 목적은 같지만 수행 방식을 갈아 끼운다 | 손해사정사 배정 기준 |
-| Command | 동작을 객체로 포장해 지연 실행하거나 취소한다 | 현장 지시, 통신 단절 |
-| Visitor | 데이터 구조는 고정, 그 위의 로직만 계속 추가한다 | 사기 점검 규칙 |
+| 패턴 | 바뀌는 것 | 핵심 파일 | 한 줄 요약 |
+|---|---|---|---|
+| State | 상태와 상태별 허용 작업 | `ClaimState`, `Claim`, `ReceivedState`, `ClaimWorkflow`, `PendingCalcState` | `Claim`은 상태에 위임만 하고, 각 상태가 허용 작업을 정한다 |
+| Strategy | 손해사정사 배정 기준 | `AssignmentStrategy`, `DistanceFirstStrategy`, `AssignCommand` | 선택 기준이 인터페이스 뒤에 있다 |
+| Command | 현장 지시, 통신 단절 | `FieldCommand`, `AssignCommand`, `CommandInvoker`, `FieldTerminal` | 지시를 객체로 만들어 실행·취소·이력·큐 보관 |
+| Visitor | 사기 점검 규칙 | `ClaimElement`, `ClaimVisitor`, `FraudRule`, `RepeatedClaimRule`, `FraudInspector` | 요소는 고정, 규칙만 클래스로 추가 |
 
 ---
 
-## 1. State: 상태에 따라 할 수 있는 일이 다르다
+## 1. State: 상태가 행동을 결정한다
 
-### ① 일상 비유
-택배를 생각해 보자. "접수됨" 상태에서는 주소 변경이 되지만, "배송 중"에서는 안 되고, "배송 완료"에서는 반품만 된다. **같은 요청이라도 지금 상태에 따라 결과가 다르다.**
-
-### ② 우리 문제
-`pay()`(지급)는 같은 요청인데 상태마다 결과가 다르다.
-
-| 상태 | `pay()` 결과 |
-|---|---|
-| 접수, 배정 | 거절(조사 전) |
-| 조사중 | 거절(조사 중) |
-| 산정대기 | 거절(사기 점검 전) |
-| 지급승인 | **지급 완료**, 종결로 이동 |
-| 사기조사보류 | 거절(보류 중) |
-
-### ③ 패턴이 없으면?
-`Claim` 안에 이런 코드가 쌓인다.
+### 1-1. `ClaimState`: 기본은 전부 거절, 각 상태가 자기 작업만 허용 (`ClaimState.java`)
 
 ```java
-public boolean pay() {
-    if (state == 접수 || state == 배정) { ... 거절 }
-    else if (state == 조사중) { ... 거절 }
-    else if (state == 지급승인) { ... 지급 }
-    ...
+public interface ClaimState {
+    String name();
+    String denyReason();
+
+    default boolean assign(Claim c, Adjuster a)             { return deny("assign"); }
+    default boolean reassign(Claim c, Adjuster a)           { return deny("reassign"); }
+    default boolean registerResult(Claim c, String r)       { return deny("registerResult"); }
+    default boolean proceed(Claim c)                        { return deny("proceed"); }
+    default boolean inspectFraud(Claim c, FraudInspector i) { return deny("inspectFraud"); }
+    default boolean pay(Claim c)                            { return deny("pay"); }
+
+    default boolean deny(String operation) {
+        System.out.println("  " + operation + "() → 거절(" + denyReason() + ")");
+        return false;
+    }
 }
 ```
 
-`assign`, `proceed`, `registerResult` 등 **모든 메서드에 같은 분기**가 생긴다. 상태가 하나 늘면(영상조사대기) 모든 메서드를 고쳐야 하고, 하나라도 빠뜨리면 영상조사 중에 지급이 승인될 수 있다.
+### 1-2. `Claim`: 판단하지 않고 현재 상태에 위임만 한다 (`Claim.java`)
 
-### ④ 누가 무슨 일을 하나
+```java
+public boolean assign(Adjuster a) { return state.assign(this, a); }
+public boolean pay()              { return state.pay(this); }
+public void moveNext()            { moveTo(workflow.next(state)); }
+```
 
-| 클래스 | 역할 (비유) |
-|---|---|
-| `Claim` | 사고 건. 요청을 받으면 **직접 판단하지 않고 현재 상태에 넘긴다** (접수 창구) |
-| `ClaimState` | 모든 상태의 공통 약속. 기본은 전부 "거절" |
-| `ReceivedState`, `AssignedState` ... | 상태 하나씩. **자기 단계에서 허용되는 작업만** 직접 구현 (담당자) |
-| `ClaimWorkflow` | 상태 진행 순서표. "접수 다음은 배정" 같은 순서를 안다 |
+if/switch가 없다. 새 상태가 생겨도 이 코드는 바뀌지 않는다.
 
-핵심은 **상태 클래스가 "다음 상태가 뭔지" 모른다**는 점이다. 순서는 `ClaimWorkflow`가 안다.
+### 1-3. `ReceivedState`: 접수 상태는 `assign`만 허용 (`ReceivedState.java`)
 
-### ⑤ 실제 흐름
+```java
+public class ReceivedState implements ClaimState {
+    @Override public String name() { return "접수"; }
+    @Override public String denyReason() { return "조사 전"; }
 
-**흐름 A. 접수 상태에서 지급 요청 → 거절** (시나리오 2)
+    @Override
+    public boolean assign(Claim c, Adjuster a) {
+        c.setAdjuster(a);
+        c.moveNext();   // 다음이 무엇인지는 이 클래스가 모른다
+        return true;
+    }
+}
+```
 
-| 단계 | 일어나는 일 | 코드 |
-|---|---|---|
-| 1 | 누군가 지급을 요청한다 | `c.pay()` |
-| 2 | `Claim`은 판단하지 않고 현재 상태에 넘긴다 | `state.pay(this)` |
-| 3 | 현재 상태는 접수(`ReceivedState`). 이 클래스에는 `pay`가 없다 | (구현 안 함) |
-| 4 | 그래서 `ClaimState`의 기본 구현이 실행된다. 기본은 거절 | `deny("pay")` |
-| 5 | 출력: `pay() → 거절(조사 전)`. 상태는 접수 그대로 | `false` 반환 |
+`pay()`를 부르면 구현이 없으니 기본 거절이 실행되어 `pay() → 거절(조사 전)`이 출력된다.
 
-**흐름 B. 배정 → 다음 상태로 이동** (시나리오 1)
+### 1-4. `ClaimWorkflow`: 순서를 한 곳에서 관리 (`ClaimWorkflow.java`)
 
-| 단계 | 일어나는 일 | 코드 |
-|---|---|---|
-| 1 | 배정 요청이 들어온다 | `c.assign(K)` |
-| 2 | 접수 상태로 위임된다 | `state.assign(this, K)` |
-| 3 | 접수 상태는 `assign`을 허용한다. 담당자를 저장한다 | `c.setAdjuster(K)` |
-| 4 | 다음 상태로 가라고 `Claim`에 요청한다 | `c.moveNext()` |
-| 5 | `Claim`이 순서표에 묻는다. "접수 다음이 뭐야?" | `workflow.next(state)` |
-| 6 | 순서표가 배정 상태를 돌려준다. 출력: `상태 전이: 접수 → 배정` | `moveTo(배정)` |
+```java
+public static ClaimWorkflow standard() {
+    ClaimWorkflow w = new ClaimWorkflow();
+    w.order.add(new ReceivedState());
+    w.order.add(new AssignedState());
+    w.order.add(new InvestigatingState());
+    w.order.add(new PendingCalcState());
+    w.order.add(new PaymentApprovedState());
+    w.order.add(new ClosedState());
+    return w;
+}
 
-**흐름 C. 점검 결과에 따라 갈림길** (시나리오 1과 4)
+public ClaimWorkflow insertAfter(Class<? extends ClaimState> anchor, ClaimState added) { ... }
+```
 
-| 단계 | 일어나는 일 |
-|---|---|
-| 1 | 산정대기 상태가 점검기에 점검을 맡기고 **결과표(Report)만** 받는다 |
-| 2 | 점수 합계가 75점 미만이면 `moveNext()`로 **지급승인**으로 간다 |
-| 3 | 75점 이상이면 정상 순서표에 없는 `FraudHoldState`로 **직접** 이동한다 (`moveTo`) |
-| 4 | 이후 `pay()`는 사기조사보류 상태가 거절한다: `거절(보류 중)` |
+상태 클래스는 "다음이 무엇인지"를 모르고, 순서는 이 목록이 안다.
 
-**흐름 D. 새 상태 끼우기: 영상조사대기** (시나리오 5)
+### 1-5. `PendingCalcState`: 점검 결과를 보고 전이를 직접 결정 (`PendingCalcState.java`)
 
-| 단계 | 일어나는 일 |
-|---|---|
-| 1 | `VideoWaitState` 클래스를 새로 만든다 (허용 작업: 결과 등록, 진행) |
-| 2 | 순서표에 한 줄 추가: `insertAfter(InvestigatingState.class, new VideoWaitState())` |
-| 3 | 조사중에서 `proceed()` → `moveNext()` → 순서표가 영상조사대기를 돌려준다 |
-| 4 | **조사중 클래스는 한 줄도 안 바뀌었다.** 다음 상태를 순서표가 정하기 때문이다 |
-
-### ⑥ 한 줄 정리
-> "`Claim`은 위임만, 허용 여부는 상태가, 순서는 순서표가 안다. 그래서 상태를 늘려도 기존 클래스는 안 바뀐다."
-
-실행: `java -cp out team5.Main 2` (접수 지급 거절), `java -cp out team5.Main 5` (영상조사대기)
+```java
+public boolean inspectFraud(Claim c, FraudInspector inspector) {
+    FraudInspector.Report report = inspector.inspect(c);
+    if (report.suspicious()) {
+        c.moveTo(new FraudHoldState());   // 정상 경로 밖이라 직접 지정
+    } else {
+        c.moveNext();                     // 산정대기 → 지급승인
+    }
+    return true;
+}
+```
 
 ---
 
 ## 2. Strategy: 배정 기준을 갈아 끼운다
 
-### ① 일상 비유
-길찾기 앱을 생각해 보자. 목적지는 같은데 **"최단 거리", "최소 환승", "무료 도로"** 중 방법을 고른다. 앱은 방법만 바꿔 끼우고, 길을 안내하는 화면은 그대로다.
-
-### ② 우리 문제
-사고 하나에 손해사정사를 한 명 골라야 하는데, 기준이 상황마다 다르다.
-
-| 기준 | 선택 방식 |
-|---|---|
-| 거리 우선 | 사고 현장과 가장 가까운 사람 |
-| 전문분야 우선 | 차량 종류(대형화물 등) 전문가 중 가장 가까운 사람 |
-| 업무량 균등 | 진행 중인 건수가 가장 적은 사람 |
-| AI 판독 기반 (변경 시나리오) | 중대 손상이면 중대손상 전문가, 아니면 업무량 최소 |
-
-같은 사고라도 기준에 따라 결과가 달라진다. (대형화물 사고: 거리 우선 K, 전문분야 우선 L, 업무량 균등 M)
-
-### ③ 패턴이 없으면?
-배정 코드 안에 이렇게 쌓인다.
+### 2-1. 인터페이스와 구현체 (`AssignmentStrategy.java`, `DistanceFirstStrategy.java`)
 
 ```java
-if (정책 == "거리") { ... }
-else if (정책 == "전문분야") { ... }
-else if (정책 == "업무량") { ... }
-```
+public interface AssignmentStrategy {
+    String name();
+    Optional<Adjuster> select(Claim claim, List<Adjuster> candidates);
+}
 
-정책이 하나 늘 때마다 **배정 코드를 열어서 고쳐야** 하고, 정책끼리 서로의 조건을 건드릴 수 있다.
+public class DistanceFirstStrategy implements AssignmentStrategy {
+    @Override public String name() { return "거리 우선"; }
 
-### ④ 누가 무슨 일을 하나
-
-| 클래스 | 역할 (비유) |
-|---|---|
-| `AssignmentStrategy` | "후보 중에서 한 명을 골라준다"는 약속 (길찾기 방법의 공통 틀) |
-| `DistanceFirstStrategy` 등 4개 | 각자의 기준으로 고르는 방법 (최단 거리, 최소 환승) |
-| `AssignCommand` / `ReassignCommand` | 전략을 **받아서 쓰는 쪽**. 어떤 기준인지는 모른다 |
-| `Adjuster`(후보) | 위치, 전문분야, 진행 건수를 가진 손해사정사 |
-
-전략을 쓰는 쪽은 `State`가 아니라 `Command`다. **"지금 배정이 허용되는가"는 State**, **"누구를 고를까"는 Strategy**로 나눈 것이다.
-
-### ⑤ 실제 흐름
-
-**흐름 A. 서버가 거리 우선으로 배정** (모든 시나리오의 배정 단계)
-
-| 단계 | 일어나는 일 | 출력 / 코드 |
-|---|---|---|
-| 1 | 서버가 배정 Command를 실행한다 | `server.run(new AssignCommand(c, POOL, new DistanceFirstStrategy()))` |
-| 2 | 기준을 먼저 보여준다 | `[배정 로직] 거리 우선: 사고 현장과 가장 가까운 사람` |
-| 3 | 후보별 비교 값을 보여준다 | `후보 K : 거리 1.4` / `L : 11.3` / `M : 5.7` |
-| 4 | 전략에게 고르게 한다 | `strategy.select(claim, 후보)` → 거리 최소 K |
-| 5 | 고른 사람을 `Claim`에 전달한다 | `claim.assign(K)` |
-| 6 | **허용 여부는 State가 판단한다** (접수 상태만 허용) | 출력: `배정: 거리 우선 → K` |
-
-**흐름 B. 같은 사고, 다른 기준** (시나리오 7)
-
-| 전략 | 비교하는 것 | 결과 |
-|---|---|---|
-| 거리 우선 | 거리 K 1.4, L 11.3, M 5.7 | **K** |
-| 전문분야 우선 | 대형화물 전문 여부 (L만 예) | **L** |
-| 업무량 균등 | 진행 건수 K 5, L 3, M 1 | **M** |
-
-`AssignCommand`는 한 줄도 안 바꿨다. **전략 객체만 바꿔 끼웠다.**
-
-**흐름 C. 새 기준 추가: AI 판독 기반** (시나리오 8)
-
-| 단계 | 일어나는 일 |
-|---|---|
-| 1 | `AiBasedStrategy` 클래스를 새로 만든다 (`AssignmentStrategy`를 구현) |
-| 2 | 사용하는 곳에서 `new AiBasedStrategy()`만 넘긴다 |
-| 3 | AI 등급이 `SEVERE`이면 중대손상 전문가(M)를 고른다. 거리 우선이었다면 K였을 것이다 |
-| 4 | `AssignCommand`, `Claim`, 상태 클래스는 **수정 없음** |
-
-### ⑥ 한 줄 정리
-> "누구를 고를지는 전략이, 배정해도 되는지는 상태가 정한다. 그래서 기준을 늘려도 배정 코드는 안 바뀐다."
-
-실행: `java -cp out team5.Main 7` (전략 비교), `java -cp out team5.Main 8` (AI 배정)
-
----
-
-## 3. Command: 동작을 물건으로 만든다
-
-### ① 일상 비유
-식당 주문서를 생각해 보자. 웨이터가 손님 요청을 **주문서(종이)에 적어서** 주방에 전달한다. 종이가 되었기 때문에 ① 바빠서 **쌓아 두었다가 순서대로** 처리하고 ② 취소할 수 있고 ③ 기록이 남는다.
-
-### ② 우리 문제
-현장 지시(배정, 재배정, 결과 등록)에 세 가지가 필요하다.
-1. 실행하고, **취소**할 수 있어야 한다.
-2. **이력**이 남아야 한다.
-3. 터널처럼 **통신이 끊기면** 단말에 보관했다가, 복구되면 **순서대로** 전송해야 한다.
-
-### ③ 패턴이 없으면?
-`terminal.assign(...)`, `terminal.registerResult(...)`처럼 **메서드를 바로 호출**하면 호출 순간 끝난다. 통신이 끊겼을 때 어떤 호출이 있었는지, 순서가 어땠는지, 취소하려면 무엇을 되돌려야 하는지 **알 수 없다.** 행동이 코드 속에 사라지기 때문이다.
-
-### ④ 누가 무슨 일을 하나
-
-| 클래스 | 역할 (비유) |
-|---|---|
-| `FieldCommand` | 주문서의 공통 양식: `execute`(실행), `undo`(취소), `describe`(기록 한 줄) |
-| `AssignCommand`, `ReassignCommand`, `RegisterResultCommand` | 구체적인 주문서 (배정, 재배정, 결과 등록) |
-| `FieldTerminal` | 손해사정사의 단말. 온라인이면 바로 전달, 오프라인이면 **큐에 보관** (웨이터) |
-| `CommandInvoker` | 서버의 실행기. 실행하고 **이력과 취소용 기록**을 남긴다 (주방 접수대) |
-| `Claim` | 지시를 실제로 받아 적용하는 대상 |
-
-### ⑤ 실제 흐름
-
-**흐름 A. 통신이 정상일 때: 조사 결과 등록**
-
-| 단계 | 일어나는 일 | 코드 |
-|---|---|---|
-| 1 | 단말에서 주문서를 만들어 제출한다 | `terminal.submit(new RegisterResultCommand(c, "전면부 파손 확인"))` |
-| 2 | 온라인이므로 서버에 바로 넘긴다 | `server.run(command)` |
-| 3 | 주문서가 스스로 실행된다 | `command.execute()` → `claim.registerResult(...)` |
-| 4 | 현재 상태가 허용하는지 State가 판단한다 (조사중만 허용) | |
-| 5 | **성공했으면** 취소용 스택에 쌓고 이력을 남긴다 | `executed.push`, `audit.add("실행: 결과등록(...)")` |
-| 6 | 출력: `조사 결과 등록: 전면부 파손 확인` | |
-
-실패(거절)하면 **이력에 남지 않는다.** 예를 들어 접수 상태에서 결과 등록을 시도하면 거절되고 기록되지 않는다.
-
-**흐름 B. 터널 통신 단절** (시나리오 3)
-
-| 단계 | 일어나는 일 | 출력 |
-|---|---|---|
-| 1 | 터널 진입, 통신이 끊긴다 | `setOnline(false)` → `통신 단절` |
-| 2 | 결과 등록 2건을 제출한다. 서버로 못 가고 **큐에 쌓인다** | `단말 보관 ... (대기 1건)`, `(대기 2건)` |
-| 3 | 이 시점에 서버에는 아직 아무것도 없다 | `서버에 등록된 조사 결과: 0건` |
-| 4 | 터널 통과, 통신이 복구된다 | `통신 복구 → 보관 2건 순서대로 전송` |
-| 5 | 큐에서 **먼저 넣은 것부터** 꺼내 서버로 실행한다 | `server.run(pending.poll())` |
-| 6 | 2건이 제출한 순서대로 등록된다 | `서버에 등록된 조사 결과: 2건 [전면부 파손 확인, 블랙박스 영상 확보]` |
-
-큐는 FIFO(먼저 넣은 것이 먼저 나옴)라서 **순서가 보장된다.**
-
-**흐름 C. 재배정 요청과 취소** (시나리오 7, 9)
-
-| 단계 | 일어나는 일 | 출력 |
-|---|---|---|
-| 1 | K가 단말에서 재배정을 요청한다 | `terminal.submit(new ReassignCommand(...))` |
-| 2 | 실행하면서 **요청자(요청 시점 담당자)** 를 기억한다 | `재배정 요청자: K` |
-| 3 | 되돌릴 수 있게 실행 직전의 상태와 담당자를 저장한다 | `prevState`, `prevAdjuster` |
-| 4 | 요청자를 뺀 후보로 전략이 다시 고른다 | `재배정: 업무량 균등 → M` |
-| 5 | 서버가 이력을 남긴다 | `실행: 재배정(AC-3007, 업무량 균등, 요청자 K)` |
-| 6 | 취소하면 가장 최근 명령을 꺼내 되돌린다 | `server.undoLast()` → `command.undo()` → `claim.restore(...)` |
-| 7 | 담당자가 K로 돌아오고 취소도 이력에 남는다 | `취소: 재배정(...)` |
-
-### ⑥ 한 줄 정리
-> "지시를 객체로 만들었기 때문에 쌓아 둘 수 있고(단말 큐), 되돌릴 수 있고(undo), 기록할 수 있다(이력)."
-
-실행: `java -cp out team5.Main 3` (통신 단절), `java -cp out team5.Main 7` (재배정 취소), `java -cp out team5.Main 9` (재배정 요청)
-
----
-
-## 4. Visitor: 구조는 그대로 두고 검사만 추가한다
-
-### ① 일상 비유
-건강검진을 생각해 보자. 몸(혈액, 눈, 폐)은 **그대로**인데, 검사 항목은 해마다 **새로 추가**된다. 몸에 새 기능을 붙이는 게 아니라, **검사관(방문자)이 몸의 각 부분을 돌며** 필요한 것만 본다.
-
-### ② 우리 문제
-사고 건은 네 가지 구성 요소로 이루어져 있고 이 구조는 **고정**이다. 반면 사기 점검 규칙은 **계속 늘어난다.**
-
-| 구성 요소 (고정) | 점검 규칙 (계속 늘어남) |
-|---|---|
-| 사고정보 | 단기 반복 청구 +40 (당사자를 본다) |
-| 당사자 | 견적 과다 +35 (제휴사 견적을 본다) |
-| 청구항목 | 정비공장 반복 거래 +30 (제휴사 견적을 본다, 변경 시나리오) |
-| 제휴사 견적 | ... |
-
-점수가 **75점 이상이면 사기조사보류**다.
-
-### ③ 패턴이 없으면?
-점검 로직을 사고 건이나 요소 클래스 안에 넣게 된다.
-
-```java
-claim.checkFraud() {
-    if (party.recentClaims >= 3) score += 40;
-    if (estimate.amount > estimate.ref * 1.5) score += 35;
-    // 규칙이 늘 때마다 여기와 요소 클래스를 고친다
+    @Override
+    public Optional<Adjuster> select(Claim claim, List<Adjuster> candidates) {
+        return candidates.stream()
+                .min(Comparator.comparingDouble(a -> a.location().distanceTo(claim.location())));
+    }
 }
 ```
 
-규칙이 하나 늘 때마다 **이 메서드를 열어서 고치고**, 규칙이 필요로 하는 값 때문에 요소 클래스에도 점검용 코드가 계속 늘어난다.
+구현체는 `DistanceFirstStrategy`(거리 우선), `SpecialtyFirstStrategy`(전문분야 우선), `WorkloadBalancedStrategy`(업무량 균등)와 변경 시나리오의 `AiBasedStrategy`(AI 판독 기반)가 있다.
 
-### ④ 누가 무슨 일을 하나
+### 2-2. 쓰는 쪽은 `AssignCommand`: 기준이 무엇인지 모른다 (`AssignCommand.java`)
 
-| 클래스 | 역할 (비유) |
-|---|---|
-| `ClaimElement` | 몸의 부분. "나를 점검해주세요" `accept(검사관)`만 안다 |
-| `AccidentInfo`, `Party`, `ClaimItem`, `PartnerEstimate` | 구체적인 부분 4개. **고정** |
-| `ClaimVisitor` | 검사관의 공통 틀. 부분마다 `visit`이 하나씩 |
-| `FraudRule` | 점검 규칙의 기반. 이름, 점수, 기록(`flag`)을 가진다. 관심 없는 부분은 **그냥 지나간다** |
-| `RepeatedClaimRule` 등 | 구체적인 검사관 (단기 반복 청구, 견적 과다 ...) |
-| `FraudInspector` | 검사 팀장. **모든 검사관을 모든 부분에 보내고** 점수만 합산한다 |
+```java
+Adjuster chosen = strategy.select(claim, candidates).orElse(null);
+...
+return claim.assign(chosen);   // 가능 여부는 State가 판단
+```
 
-### ⑤ 실제 흐름: 청구 4회, 견적 450만원(표준 250만원)인 사고 건 (시나리오 4)
-
-| 단계 | 일어나는 일 | 코드 / 출력 |
-|---|---|---|
-| 1 | 산정대기 상태가 점검기에 점검을 맡긴다 | `inspector.inspect(claim)` |
-| 2 | 첫 규칙(단기 반복 청구)을 요소 4개에 차례로 보낸다 | `element.accept(rule)` |
-| 3 | 각 요소가 **자기 이름표를 달고** 방문자를 부른다 | `AccidentInfo.accept` → `visitor.visit(this)` |
-| 4 | 이 규칙은 **당사자만 관심**이 있다. 사고정보, 청구항목, 견적은 빈 `visit`으로 지나간다 | `FraudRule`의 기본 `visit`은 아무것도 안 함 |
-| 5 | 당사자에서 조건을 본다. 청구 4회 ≥ 3회, 걸렸다 | `flag("최근 6개월 청구 4회")` |
-| 6 | 점검기가 기록을 수거해서 점수를 센다 | `drain()` → **+40** |
-| 7 | 둘째 규칙(견적 과다)도 같은 방식으로 돈다. 이번엔 **제휴사 견적만** 관심이 있다 | 견적 450만원 > 표준 250만원 × 1.5 → **+35** |
-| 8 | 합계를 내고 기준과 비교한다 | `합계 75점 (기준 75점 이상이면 보류)` |
-| 9 | **결과표(Report)만** 산정대기 상태에 돌려준다. 점검기는 전이를 하지 않는다 | `Report(항목별 점수, 총점, 의심 여부)` |
-| 10 | 산정대기 상태가 결과를 보고 직접 이동한다 | `moveTo(new FraudHoldState())` |
-| 11 | 이후 지급은 거절된다 | `pay() → 거절(보류 중)` |
-
-**더블 디스패치를 쉽게 말하면**
-
-1. 점검기가 요소에게 **"이 검사관을 받아주세요"** 라고 한다 (`element.accept(rule)`).
-2. 요소가 검사관에게 **"저는 당사자예요, 이 검사해주세요"** 라고 한다 (`visitor.visit(this)`).
-3. 요소가 자기 타입을 아니까, 검사관은 **정확한 `visit`을 고를 수 있다.**
-
-**새 규칙 추가: 정비공장 반복 거래** (시나리오 6)
-
-| 단계 | 일어나는 일 |
-|---|---|
-| 1 | `PartnerRepeatRule` 클래스를 새로 만든다. 제휴사 견적만 보고 5회 이상이면 +30 |
-| 2 | 점검기에 한 줄로 등록한다: `inspector.add(new PartnerRepeatRule())` |
-| 3 | 요소 4개와 점검기와 산정대기 상태는 **수정 없음.** 출력의 점검 항목이 3개로 늘고 점수가 40 → 70으로 오른다 |
-
-### ⑥ 한 줄 정리
-> "구성 요소는 고정이고 검사관만 늘린다. 요소는 `accept`만 알고, 점검기는 점수만 합산하며, 전이는 상태가 결정한다."
-
-**한계**: 구성 요소 종류가 새로 생기면(예: 병원 진료 기록) `ClaimVisitor`에 `visit`을 하나 더 넣어야 하고 모든 검사관이 영향을 받는다. 구성 요소가 고정이라는 과제 가정에 기댄 선택이다.
-
-실행: `java -cp out team5.Main 4` (75점 보류), `java -cp out team5.Main 6` (규칙 추가)
+선택 기준(Strategy)과 허용 여부(State)가 서로 섞이지 않는다.
 
 ---
 
-## 5. 네 패턴이 한 요청에서 만나는 모습
+## 3. Command: 동작을 객체로 만든다
 
-접수된 사고가 지급까지 가는 한 번의 흐름(시나리오 1)에서 패턴이 일하는 순서다.
+### 3-1. `FieldCommand` (`FieldCommand.java`)
 
-| 순서 | 일어나는 일 | 일하는 패턴 |
-|---|---|---|
-| 1 | 사고 접수(2조 범위)가 배정 요청을 보낸다 | (입력) |
-| 2 | 서버가 배정 Command를 실행한다 | **Command** |
-| 3 | 배정 로직이 후보를 비교해 손해사정사를 고른다 | **Strategy** |
-| 4 | 접수 상태가 담당자를 저장하고 배정 상태로 이동한다 | **State** |
-| 5 | 선택된 손해사정사의 단말로 통보한다 | (통보) |
-| 6 | 조사 결과를 단말에서 보낸다. 끊기면 큐에 보관한다 | **Command** |
-| 7 | 조사중 상태만 결과 등록을 허용한다 | **State** |
-| 8 | 산정대기에서 규칙이 요소를 돌며 점수를 합산한다 | **Visitor** |
-| 9 | 점수를 보고 지급승인 또는 사기조사보류로 이동한다 | **State** |
-| 10 | 지급승인에서만 지급이 허용되고 종결된다 | **State** |
+```java
+public interface FieldCommand {
+    boolean execute();    // 거절되면 false → 이력에 안 남음
+    void undo();          // 되돌리기
+    String describe();    // 이력 한 줄
+}
+```
 
-## 6. 발표에서 쓸 비유 모음
+구현체는 `AssignCommand`(배정), `ReassignCommand`(재배정), `RegisterResultCommand`(조사 결과 등록)다.
 
-| 패턴 | 비유 한 문장 |
+### 3-2. `AssignCommand`: undo를 위해 실행 직전 값을 저장 (`AssignCommand.java`)
+
+```java
+prevState = claim.state();
+prevAdjuster = claim.adjuster();
+return claim.assign(chosen);
+
+public void undo() { claim.restore(prevState, prevAdjuster); }
+```
+
+### 3-3. `CommandInvoker`: 성공한 명령만 이력과 스택에 쌓는다 (`CommandInvoker.java`)
+
+```java
+public boolean run(FieldCommand command) {
+    boolean ok = command.execute();
+    if (ok) {
+        executed.push(command);                    // 취소용 스택
+        audit.add("실행: " + command.describe());  // 이력
+    }
+    return ok;
+}
+
+public boolean undoLast() {
+    FieldCommand command = executed.pop();
+    command.undo();
+    audit.add("취소: " + command.describe());
+    return true;
+}
+```
+
+### 3-4. `FieldTerminal`: 통신이 끊기면 큐에 보관, 복구되면 순서대로 전송 (`FieldTerminal.java`)
+
+```java
+public void submit(FieldCommand command) {
+    if (online) server.run(command);
+    else pending.add(command);               // FIFO 큐에 보관
+}
+
+public void setOnline(boolean online) {
+    this.online = online;
+    if (!online) return;
+    while (!pending.isEmpty()) {
+        server.run(pending.poll());          // 먼저 보관한 것부터
+    }
+}
+```
+
+---
+
+## 4. Visitor: 요소는 고정, 규칙만 추가
+
+### 4-1. 요소(Element)와 방문자(Visitor) (`ClaimElement.java`, `ClaimVisitor.java`, `PartnerEstimate.java`)
+
+```java
+public interface ClaimElement {
+    void accept(ClaimVisitor visitor);
+}
+
+public interface ClaimVisitor {
+    void visit(AccidentInfo element);
+    void visit(Party element);
+    void visit(ClaimItem element);
+    void visit(PartnerEstimate element);
+}
+
+public record PartnerEstimate(String partner, long amount, long referenceAmount, int repeatDeals)
+        implements ClaimElement {
+    @Override
+    public void accept(ClaimVisitor visitor) { visitor.visit(this); }   // 더블 디스패치
+}
+```
+
+### 4-2. `FraudRule`: 관심 있는 요소만 override (`FraudRule.java`)
+
+```java
+public abstract class FraudRule implements ClaimVisitor {
+    public abstract String title();
+    public abstract int maxPoints();
+
+    protected void flag(String detail) {
+        findings.add(new Finding(title(), maxPoints(), detail));
+    }
+    public List<Finding> drain() { /* 기록을 꺼내고 비운다 */ }
+
+    @Override public void visit(AccidentInfo element) {}   // 관심 없음
+    @Override public void visit(Party element) {}
+    @Override public void visit(ClaimItem element) {}
+    @Override public void visit(PartnerEstimate element) {}
+}
+```
+
+### 4-3. 규칙 하나 = 클래스 하나 (`RepeatedClaimRule.java`)
+
+```java
+public class RepeatedClaimRule extends FraudRule {
+    @Override public String title() { return "단기 반복 청구"; }
+    @Override public int maxPoints() { return 40; }
+
+    @Override
+    public void visit(Party element) {
+        if (element.recentClaims() >= 3) flag("최근 6개월 청구 " + element.recentClaims() + "회");
+    }
+}
+```
+
+### 4-4. `FraudInspector`: 점수만 합산해서 돌려준다 (`FraudInspector.java`)
+
+```java
+for (FraudRule rule : rules) {
+    for (ClaimElement element : claim.elements()) {
+        element.accept(rule);                 // accept → visit
+    }
+    List<FraudRule.Finding> found = rule.drain();
+    int points = found.stream().mapToInt(FraudRule.Finding::points).sum();
+    results.add(new RuleResult(rule.title(), points, rule.maxPoints(), detail));
+    total += points;
+}
+return new Report(results, total, threshold, total >= threshold);   // 75점 이상이면 suspicious
+```
+
+`FraudInspector`는 상태 클래스를 모르고 결과만 돌려준다. 전이는 1-5의 `PendingCalcState`가 결정한다.
+
+---
+
+## 5. 변경 시나리오: 기존 코드 수정 없이 꽂기 (`team5.ext`)
+
+### 5-1. 영상조사대기 (State): 상태 클래스 하나와 조립 한 줄 (`VideoWaitState.java`)
+
+```java
+public class VideoWaitState implements ClaimState {
+    @Override public String name() { return "영상조사대기"; }
+    @Override public String denyReason() { return "영상조사 대기"; }
+    @Override public boolean registerResult(Claim c, String result) { c.addResult(result); return true; }
+    @Override public boolean proceed(Claim c) { c.moveNext(); return true; }
+}
+
+ClaimWorkflow extended = ClaimWorkflow.standard()
+        .insertAfter(InvestigatingState.class, new VideoWaitState());   // 한 줄
+```
+
+### 5-2. AI 판독 기반 배정 (Strategy): 전략 구현체 하나 (`AiBasedStrategy.java`)
+
+```java
+new AssignCommand(c, POOL, new AiBasedStrategy())
+```
+
+AI 등급이 `SEVERE`이면 중대손상 전문가 중 가장 가까운 사람, 아니면 진행 건수가 가장 적은 사람을 고른다.
+
+### 5-3. 정비공장 반복 거래 규칙 (Visitor): 규칙 클래스 하나와 등록 한 줄 (`PartnerRepeatRule.java`)
+
+```java
+public class PartnerRepeatRule extends FraudRule {
+    @Override public String title() { return "특정 제휴 정비공장 반복 거래"; }
+    @Override public int maxPoints() { return 30; }
+
+    @Override
+    public void visit(PartnerEstimate element) {
+        if (element.repeatDeals() >= 5) flag(element.partner() + " 반복 거래 " + element.repeatDeals() + "회");
+    }
+}
+
+FraudInspector inspector = baseInspector().add(new PartnerRepeatRule());   // 한 줄
+```
+
+---
+
+## 6. 발표에서 짚을 포인트
+
+| 패턴 | 짚을 말 |
 |---|---|
-| State | "택배는 상태에 따라 할 수 있는 일이 달라요." |
-| Strategy | "길찾기 앱처럼 목적지는 같고 방법만 갈아 끼워요." |
-| Command | "식당 주문서처럼 요청을 종이로 만들면 쌓아 두고, 취소하고, 기록할 수 있어요." |
-| Visitor | "건강검진처럼 몸은 그대로고 검사 항목만 계속 늘어요." |
+| State | `Claim.pay()`는 `state.pay(this)` 한 줄이라서 상태가 늘어도 `Claim`은 안 바뀐다 |
+| Strategy | 선택 기준이 인터페이스 뒤에 있어서 `AssignCommand`는 기준을 모른다 |
+| Command | `run`은 성공한 명령만 이력과 스택에 쌓고, 단말은 단절 중에 큐에 쌓는다 |
+| Visitor | `FraudInspector`는 `accept`만 호출하고 규칙 내용은 모른다. 규칙이 늘어도 요소 4종은 그대로다 |
 
-## 7. 함께 보면 좋은 문서
+## 7. 관련 문서
 
 | 문서 | 내용 |
 |---|---|
-| `코드로_보는_패턴.md` | 패턴별 실제 코드 조각 |
+| `변경시나리오_상세분석.md` | 변경 시나리오 3종의 패턴과 구현 분석 |
+| `클래스다이어그램_발표대본.md` | 클래스 다이어그램 장표 발표 대본 |
 | `시퀀스_상태다이어그램.md` | State 다이어그램, 배정·현장 조사 시퀀스, 사기 점검 시퀀스 |
-| `변경시나리오_상세분석.md` | 변경 시나리오 3종 분석 |
-| `발표흐름.md` | 전체 발표 대본과 예상 질문 |
